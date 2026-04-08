@@ -9,11 +9,6 @@ const cmux = async (...args: string[]): Promise<string> => {
 }
 
 /**
- * Get the caller's CMUX surface UUID from the environment.
- */
-const getOwnUUID = (): string | undefined => process.env.CMUX_SURFACE_ID
-
-/**
  * Parse workspace list output into [{ref, name}].
  */
 const parseWorkspaces = (output: string): { ref: string; name: string }[] => {
@@ -50,13 +45,12 @@ const parseSurfaces = (output: string): { ref: string; name: string }[] => {
 }
 
 /**
- * Parse a composite surface identifier (ws:N/uuid:XXXX) into workspace ref and surface UUID.
- * Falls back to treating the input as a bare UUID if it doesn't match the composite format.
+ * Parse a composite surface identifier (ws:N/surf:M) into workspace ref and surface ref.
  */
-const parseCompositeId = (id: string): { workspace?: string; surface: string } => {
-  const match = id.match(/^ws:(\d+)\/uuid:(.+)$/)
-  if (match) return { workspace: `workspace:${match[1]}`, surface: match[2] }
-  return { surface: id }
+const parseCompositeId = (id: string): { workspace: string; surface: string } | undefined => {
+  const match = id.match(/^ws:(\d+)\/surf:(\d+)$/)
+  if (match) return { workspace: `workspace:${match[1]}`, surface: `surface:${match[2]}` }
+  return undefined
 }
 
 /**
@@ -81,6 +75,7 @@ const isOpenCodeSurface = async (
 
 interface AgentInfo {
   workspace_name: string
+  workspace_ref: string
   surface_ref: string
 }
 
@@ -106,6 +101,7 @@ const discoverAgents = async (): Promise<AgentInfo[]> => {
         if (await isOpenCodeSurface(ws.ref, surface.ref)) {
           agents.push({
             workspace_name: ws.name,
+            workspace_ref: ws.ref,
             surface_ref: surface.ref,
           })
         }
@@ -130,29 +126,29 @@ const getOwnSurfaceRef = async (): Promise<string | undefined> => {
 }
 
 /**
- * Get the caller's own composite identity (UUID + workspace ref).
+ * Get the caller's own refs (workspace ref + surface ref) from cmux identify.
  */
-const getOwnIdentity = async (): Promise<{ uuid: string; workspaceRef: string } | undefined> => {
-  const uuid = getOwnUUID()
-  if (!uuid) return undefined
+const getOwnRefs = async (): Promise<{ workspaceRef: string; surfaceRef: string } | undefined> => {
   try {
     const raw = await cmux("identify")
     const parsed = JSON.parse(raw)
     const wsRef = parsed?.caller?.workspace_ref
-    if (!wsRef) return undefined
-    return { uuid, workspaceRef: wsRef }
+    const surfRef = parsed?.caller?.surface_ref
+    if (!wsRef || !surfRef) return undefined
+    return { workspaceRef: wsRef, surfaceRef: surfRef }
   } catch {
     return undefined
   }
 }
 
 /**
- * Build a composite surface identifier from a workspace ref and UUID.
- * Format: ws:N/uuid:XXXX
+ * Build a composite surface identifier from a workspace ref and surface ref.
+ * Format: ws:N/surf:M
  */
-const buildCompositeId = (workspaceRef: string, uuid: string): string => {
+const buildCompositeId = (workspaceRef: string, surfaceRef: string): string => {
   const wsNum = workspaceRef.replace("workspace:", "")
-  return `ws:${wsNum}/uuid:${uuid}`
+  const surfNum = surfaceRef.replace("surface:", "")
+  return `ws:${wsNum}/surf:${surfNum}`
 }
 
 export const AgentCommPlugin: Plugin = async (ctx) => {
@@ -167,9 +163,10 @@ export const AgentCommPlugin: Plugin = async (ctx) => {
           "- After sending, tell the user the message was sent and WAIT — do not auto-read the response\n" +
           "- Only use 'read' when the user asks you to check what the other agent said\n\n" +
           "Actions:\n" +
-          "- identify: Return your own CMUX surface identifier (ws:N/uuid:XXXX format) and copy it to clipboard. " +
+          "- identify: Return your own CMUX surface identifier (ws:N/surf:M format) and copy it to clipboard. " +
           "Use when the user asks 'who are you?' or wants your identity for another agent.\n" +
-          "- list: Discover all other OpenCode agents across CMUX workspaces.\n" +
+          "- list: Discover all other OpenCode agents across CMUX workspaces. " +
+          "Returns identifiers that can be used directly with send/read.\n" +
           "- send: Send a message to another agent by surface identifier.\n" +
           "- read: Read the screen of another agent's OpenCode surface by identifier.",
         args: {
@@ -184,7 +181,7 @@ export const AgentCommPlugin: Plugin = async (ctx) => {
           surface: tool.schema
             .string()
             .optional()
-            .describe("Target surface identifier in ws:N/uuid:XXXX format (required for send and read). Get this from the user — they paste it from the other agent's 'identify' output."),
+            .describe("Target surface identifier in ws:N/surf:M format (required for send and read). Get this from 'list' output or from the user (who pastes it from the other agent's 'identify' output)."),
           message: tool.schema
             .string()
             .optional()
@@ -198,12 +195,12 @@ export const AgentCommPlugin: Plugin = async (ctx) => {
           try {
             switch (args.action) {
               case "identify": {
-                const identity = await getOwnIdentity()
-                if (!identity) {
+                const refs = await getOwnRefs()
+                if (!refs) {
                   return "Could not determine surface identity. Is this running inside CMUX?"
                 }
 
-                const compositeId = buildCompositeId(identity.workspaceRef, identity.uuid)
+                const compositeId = buildCompositeId(refs.workspaceRef, refs.surfaceRef)
 
                 // Copy composite ID to clipboard
                 try {
@@ -221,30 +218,32 @@ export const AgentCommPlugin: Plugin = async (ctx) => {
                 }
 
                 const lines = agents.map(
-                  (a, i) => `  ${i + 1}. "${a.workspace_name}" (${a.surface_ref})`
+                  (a, i) => `  ${i + 1}. "${a.workspace_name}" — ${buildCompositeId(a.workspace_ref, a.surface_ref)}`
                 )
 
                 return `Found ${agents.length} other OpenCode agent(s):\n${lines.join("\n")}\n\n` +
-                  "Ask the target agent to 'identify' to get its UUID for send/read."
+                  "Use the identifier with send or read to communicate with an agent."
               }
 
               case "send": {
                 if (!args.surface) {
                   return "Error: 'surface' identifier is required for send. " +
-                    "Ask the user to paste the target agent's identifier (from its 'identify' output)."
+                    "Get it from 'list' or ask the user to paste the target agent's identifier."
                 }
                 if (!args.message) {
                   return "Error: 'message' is required for send."
                 }
 
                 const target = parseCompositeId(args.surface)
-                const wsArgs = target.workspace ? ["--workspace", target.workspace] : []
+                if (!target) {
+                  return "Error: invalid surface identifier format. Expected ws:N/surf:M."
+                }
 
                 // Build sender identity header with our composite ID
-                const senderIdentity = await getOwnIdentity()
-                const senderId = senderIdentity
-                  ? buildCompositeId(senderIdentity.workspaceRef, senderIdentity.uuid)
-                  : (getOwnUUID() ?? "unknown")
+                const senderRefs = await getOwnRefs()
+                const senderId = senderRefs
+                  ? buildCompositeId(senderRefs.workspaceRef, senderRefs.surfaceRef)
+                  : "unknown"
                 const senderCwd = process.cwd().replace(/^\/Users\/[^/]+/, "~")
                 let senderBranch = ""
                 try { senderBranch = (await Bun.$`git branch --show-current`.text()).trim() } catch {}
@@ -253,30 +252,33 @@ export const AgentCommPlugin: Plugin = async (ctx) => {
                 // Strip newlines — they cause premature submission in OpenCode's input
                 const cleanMessage = `${senderHeader} ${args.message}`.replace(/\n/g, " ")
 
-                await cmux("send", ...wsArgs, "--surface", target.surface, cleanMessage)
-                await cmux("send-key", ...wsArgs, "--surface", target.surface, "enter")
+                await cmux("send", "--workspace", target.workspace, "--surface", target.surface, cleanMessage)
+                await cmux("send-key", "--workspace", target.workspace, "--surface", target.surface, "enter")
 
-                return `Message sent to surface ${args.surface}.`
+                return `Message sent to ${args.surface}.`
               }
 
               case "read": {
                 if (!args.surface) {
                   return "Error: 'surface' identifier is required for read. " +
-                    "Ask the user to paste the target agent's identifier (from its 'identify' output)."
+                    "Get it from 'list' or ask the user to paste the target agent's identifier."
                 }
 
                 const target = parseCompositeId(args.surface)
-                const wsArgs = target.workspace ? ["--workspace", target.workspace] : []
+                if (!target) {
+                  return "Error: invalid surface identifier format. Expected ws:N/surf:M."
+                }
+
                 const numLines = args.lines ?? 50
                 const screen = await cmux(
                   "read-screen",
-                  ...wsArgs,
+                  "--workspace", target.workspace,
                   "--surface", target.surface,
                   "--scrollback",
                   "--lines", String(numLines)
                 )
 
-                return `Screen output from surface ${args.surface} (last ${numLines} lines):\n\n${screen}`
+                return `Screen output from ${args.surface} (last ${numLines} lines):\n\n${screen}`
               }
             }
           } catch (e: any) {
