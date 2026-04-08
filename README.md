@@ -121,14 +121,6 @@ Key design decisions:
 
 Currently, reading another agent's response requires `cmux read-screen` which returns raw terminal output including UI elements. A structured channel (e.g., via files or a shared socket) could provide cleaner response data.
 
-### Auto-discovery of UUIDs
+### Improved discovery of surfaces
 
 The `list` action discovers agents but can only return CMUX surface refs (e.g., `surface:38`), not UUIDs. A mechanism to resolve surface refs to UUIDs without user mediation would make fully automated discovery possible.
-
-### Response polling
-
-A `send_and_wait` action that sends a message and polls until the target agent finishes responding. This would require detecting when the agent is done (e.g., by watching for the OpenCode prompt to reappear). Currently the user mediates this by checking the other workspace manually.
-
-### Multi-agent orchestration
-
-Support for coordinated multi-agent workflows where a "lead" agent delegates tasks to other agents and collects results. This would build on the current send/read primitives but add higher-level coordination patterns.
