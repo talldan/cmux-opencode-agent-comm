@@ -1,0 +1,20 @@
+{
+  "name": "cmux-opencode-agent-comm",
+  "version": "0.1.0",
+  "main": "opencode-plugin/index.ts",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "cmux",
+    "agent",
+    "communication"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/talldan/cmux-opencode-agent-comm"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  }
+}
